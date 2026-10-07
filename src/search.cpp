@@ -1389,6 +1389,19 @@ moves_loop:  // When in check, search starts here
         // Apply the computed LMR
         if (depth >= 2 && moveCount > 1)
         {
+            // Use the bound stored for the child position, even when it is too
+            // shallow to cut off by itself, as a hint about the outcome of this
+            // move: reduce more if it predicts a fail low, less if it predicts
+            // that the move raises alpha.
+            auto [childHit, childData, childWriter] = tt.probe(pos.key());
+            if (childHit && is_valid(childData.value) && !is_decisive(childData.value))
+            {
+                if ((childData.bound & BOUND_LOWER) && -childData.value <= alpha)
+                    r += 1024;
+                else if ((childData.bound & BOUND_UPPER) && -childData.value > alpha)
+                    r -= 1024;
+            }
+
             // In general we want to cap the LMR depth search at newDepth, but when
             // reduction is negative, we allow this move a limited search extension
             // beyond the first move depth. To avoid search explosion, extensions
