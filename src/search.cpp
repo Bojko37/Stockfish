@@ -1379,6 +1379,11 @@ moves_loop:  // When in check, search starts here
         // Decrease/increase reduction for moves with a good/bad history
         r -= ss->statScore * 439 / 4096;
 
+        // Reduce moves other than the ttMove more when ttMoves have recently
+        // been reliable, and less when they have not
+        if (ttData.move && move != ttData.move)
+            r += ttMoveHistory / 16;
+
         if (!capture && !is_decisive(alpha))
             r += 3 * std::clamp(alpha - eval, -64, 96);
 
