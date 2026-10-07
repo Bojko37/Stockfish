@@ -767,7 +767,7 @@ Value Search::Worker::search(
     StateInfo st;
 
     Key   posKey;
-    Move  move, excludedMove, bestMove;
+    Move  move, excludedMove, bestMove, threatMove;
     Depth extension, newDepth;
     Value bestValue, value, eval, maxValue, probCutBeta;
     bool  givesCheck, improving, priorCapture, opponentWorsening;
@@ -821,6 +821,7 @@ Value Search::Worker::search(
 
     Square prevSq  = ((ss - 1)->currentMove).is_ok() ? ((ss - 1)->currentMove).to_sq() : SQ_NONE;
     bestMove       = Move::none();
+    threatMove     = Move::none();
     priorReduction = (ss - 1)->reduction;
     (ss - 1)->reduction        = 0;
     ss->statScore              = 0;
@@ -1041,6 +1042,14 @@ Value Search::Worker::search(
         do_null_move(pos, st, ss);
 
         Value nullValue = -search<NonPV>(pos, ss + 1, -beta, -beta + 1, depth - R, false);
+
+        // If the null move fails low, the reply that refuted it is a threat
+        if (nullValue < beta)
+        {
+            auto [nullHit, nullData, nullWriter] = tt.probe(pos.key());
+            if (nullHit)
+                threatMove = nullData.move;
+        }
 
         undo_null_move(pos);
 
@@ -1358,6 +1367,12 @@ moves_loop:  // When in check, search starts here
         // Increase reduction if ttMove is a capture
         if (ttCapture)
             r += 1079;
+
+        // Decrease reduction for moves that address the null move threat, either
+        // by moving the attacked piece away or by capturing the attacker
+        if (threatMove
+            && (move.from_sq() == threatMove.to_sq() || move.to_sq() == threatMove.from_sq()))
+            r -= 1024;
 
         // Increase reduction if next ply has a lot of fail high
         if ((ss + 1)->cutoffCnt > 1)
