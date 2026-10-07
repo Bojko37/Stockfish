@@ -1332,6 +1332,23 @@ moves_loop:  // When in check, search starts here
 
         u64 nodeCount = rootNode ? u64(nodes) : 0;
 
+        // A safe quiet move that attacks a more valuable enemy piece forces
+        // a reaction, so we reduce it less below.
+        bool createsThreat = false;
+        if (!capture)
+        {
+            const PieceType pt       = type_of(movedPiece);
+            const Bitboard  valuable = pt == PAWN     ? pos.pieces(~us) & ~pos.pieces(PAWN, KING)
+                                     : pt <= BISHOP ? pos.pieces(~us, ROOK, QUEEN)
+                                     : pt == ROOK   ? pos.pieces(~us, QUEEN)
+                                                    : Bitboard(0);
+            createsThreat =
+              valuable
+              && (Attacks::attacks_bb(movedPiece, move.to_sq(), pos.pieces() ^ move.from_sq())
+                  & valuable)
+              && pos.see_ge(move, 0);
+        }
+
         // Step 17. Make the move
         do_move(pos, move, st, givesCheck, capture, ss);
 
@@ -1358,6 +1375,10 @@ moves_loop:  // When in check, search starts here
         // Increase reduction if ttMove is a capture
         if (ttCapture)
             r += 1079;
+
+        // Decrease reduction for quiet moves that create a threat
+        if (createsThreat)
+            r -= 1024;
 
         // Increase reduction if next ply has a lot of fail high
         if ((ss + 1)->cutoffCnt > 1)
