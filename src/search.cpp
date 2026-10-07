@@ -1332,6 +1332,17 @@ moves_loop:  // When in check, search starts here
 
         u64 nodeCount = rootNode ? u64(nodes) : 0;
 
+        // For quiet moves, note whether the piece leaves or enters a square
+        // attacked by an enemy pawn
+        int pawnSafety = 0;
+        if (!capture)
+        {
+            const Bitboard pawnAttacks = us == WHITE
+                                         ? pawn_attacks_bb<BLACK>(pos.pieces(BLACK, PAWN))
+                                         : pawn_attacks_bb<WHITE>(pos.pieces(WHITE, PAWN));
+            pawnSafety = bool(pawnAttacks & move.from_sq()) - bool(pawnAttacks & move.to_sq());
+        }
+
         // Step 17. Make the move
         do_move(pos, move, st, givesCheck, capture, ss);
 
@@ -1358,6 +1369,10 @@ moves_loop:  // When in check, search starts here
         // Increase reduction if ttMove is a capture
         if (ttCapture)
             r += 1079;
+
+        // Decrease reduction for quiet moves escaping a pawn attack, and increase
+        // it for quiet moves to a square attacked by an enemy pawn
+        r -= 1024 * pawnSafety;
 
         // Increase reduction if next ply has a lot of fail high
         if ((ss + 1)->cutoffCnt > 1)
