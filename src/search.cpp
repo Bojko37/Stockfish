@@ -45,12 +45,19 @@
 #include "syzygy/tbprobe.h"
 #include "thread.h"
 #include "timeman.h"
+#include "tune.h"
 #include "tt.h"
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
 
 namespace Stockfish {
+
+// SPSA: LMR adjustments for signals found by the LMR data analysis (all start at 0)
+int lmrCheck = 0, lmrThreat = 0, lmrPawnFrom = 0, lmrPawnTo = 0, lmrChildLow = 0, lmrChildRaise = 0;
+int lmrTtmh = 0;
+TUNE(SetRange(-2048, 2048), lmrCheck, lmrThreat, lmrPawnFrom, lmrPawnTo, lmrChildLow, lmrChildRaise);
+TUNE(SetRange(-256, 256), lmrTtmh);
 
 inline int lmr_divisor(int depth) {
     int d = std::min(depth, 16);
@@ -1332,6 +1339,28 @@ moves_loop:  // When in check, search starts here
 
         u64 nodeCount = rootNode ? u64(nodes) : 0;
 
+        // Signals for LMR that need the position before the move
+        bool createsThreat = false;
+        int  pawnFrom = 0, pawnTo = 0;
+        if (!capture)
+        {
+            const PieceType pt       = type_of(movedPiece);
+            const Bitboard  valuable = pt == PAWN     ? pos.pieces(~us) & ~pos.pieces(PAWN, KING)
+                                     : pt <= BISHOP ? pos.pieces(~us, ROOK, QUEEN)
+                                     : pt == ROOK   ? pos.pieces(~us, QUEEN)
+                                                    : Bitboard(0);
+            createsThreat =
+              valuable
+              && (Attacks::attacks_bb(movedPiece, move.to_sq(), pos.pieces() ^ move.from_sq())
+                  & valuable)
+              && pos.see_ge(move, 0);
+            const Bitboard pawnAttacks = us == WHITE
+                                         ? pawn_attacks_bb<BLACK>(pos.pieces(BLACK, PAWN))
+                                         : pawn_attacks_bb<WHITE>(pos.pieces(WHITE, PAWN));
+            pawnFrom = bool(pawnAttacks & move.from_sq());
+            pawnTo   = bool(pawnAttacks & move.to_sq());
+        }
+
         // Step 17. Make the move
         do_move(pos, move, st, givesCheck, capture, ss);
 
@@ -1358,6 +1387,13 @@ moves_loop:  // When in check, search starts here
         // Increase reduction if ttMove is a capture
         if (ttCapture)
             r += 1079;
+
+        // Signals from the LMR data analysis
+        if (!capture)
+            r -= lmrCheck * givesCheck + lmrThreat * createsThreat + lmrPawnFrom * pawnFrom
+               - lmrPawnTo * pawnTo;
+        if (ttData.move && move != ttData.move)
+            r += ttMoveHistory * lmrTtmh / 1024;
 
         // Increase reduction if next ply has a lot of fail high
         if ((ss + 1)->cutoffCnt > 1)
@@ -1389,6 +1425,16 @@ moves_loop:  // When in check, search starts here
         // Apply the computed LMR
         if (depth >= 2 && moveCount > 1)
         {
+            // Hint from the child TT entry
+            auto [childHit, childData, childWriter] = tt.probe(pos.key());
+            if (childHit && is_valid(childData.value) && !is_decisive(childData.value))
+            {
+                if ((childData.bound & BOUND_LOWER) && -childData.value <= alpha)
+                    r += lmrChildLow;
+                else if ((childData.bound & BOUND_UPPER) && -childData.value > alpha)
+                    r -= lmrChildRaise;
+            }
+
             // In general we want to cap the LMR depth search at newDepth, but when
             // reduction is negative, we allow this move a limited search extension
             // beyond the first move depth. To avoid search explosion, extensions

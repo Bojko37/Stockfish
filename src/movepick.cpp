@@ -25,8 +25,14 @@
 #include "bitboard.h"
 #include "misc.h"
 #include "position.h"
+#include "tune.h"
 
 namespace Stockfish {
+
+// SPSA: move ordering signals found by the unbiased ordering analysis
+int moUnsafe = 0, moThreat = 0, moCheck = 16384;
+TUNE(SetRange(0, 48000), moUnsafe, moThreat);
+TUNE(SetRange(0, 49152), moCheck);
 
 namespace {
 
@@ -199,6 +205,7 @@ ExtMove* MovePicker::score(const MoveList<Type>& ml) {
     Color us = pos.side_to_move();
 
     [[maybe_unused]] Bitboard threatByLesser[KING + 1];
+    [[maybe_unused]] Bitboard enemyAttacks;
     if constexpr (Type == QUIETS)
     {
         threatByLesser[PAWN]   = 0;
@@ -207,6 +214,8 @@ ExtMove* MovePicker::score(const MoveList<Type>& ml) {
           pos.attacks_by<KNIGHT>(~us) | pos.attacks_by<BISHOP>(~us) | threatByLesser[KNIGHT];
         threatByLesser[QUEEN] = pos.attacks_by<ROOK>(~us) | threatByLesser[ROOK];
         threatByLesser[KING]  = 0;
+        enemyAttacks =
+          threatByLesser[QUEEN] | pos.attacks_by<QUEEN>(~us) | pos.attacks_by<KING>(~us);
     }
 
     ExtMove* it = cur;
@@ -239,12 +248,25 @@ ExtMove* MovePicker::score(const MoveList<Type>& ml) {
             value += (*continuationHistory[5])[pc][to];
 
             // bonus for checks
-            value += ((pos.check_squares(pt) & to) && pos.see_ge(m, -75)) * 16384;
+            value += ((pos.check_squares(pt) & to) && pos.see_ge(m, -75)) * moCheck;
 
             // penalty for moving to a square threatened by a lesser piece
             // or bonus for escaping an attack by a lesser piece.
             int v = 20 * (bool(threatByLesser[pt] & from) - bool(threatByLesser[pt] & to));
             value += PieceValue[pt] * v;
+
+            // penalty for an unsafe destination, bonus for safely attacking a more valuable piece
+            if ((enemyAttacks & to) && !pos.see_ge(m, 0))
+                value -= moUnsafe;
+            else
+            {
+                const Bitboard valuable = pt == PAWN     ? pos.pieces(~us) & ~pos.pieces(PAWN, KING)
+                                        : pt <= BISHOP ? pos.pieces(~us, ROOK, QUEEN)
+                                        : pt == ROOK   ? pos.pieces(~us, QUEEN)
+                                                       : Bitboard(0);
+                if (valuable && (Attacks::attacks_bb(pc, to, pos.pieces() ^ from) & valuable))
+                    value += moThreat;
+            }
 
 
             if (ply < LOW_PLY_HISTORY_SIZE)
